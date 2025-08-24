@@ -1,20 +1,5 @@
 {
-  "brasil": [
-    "PETR4.SA",
-    "VALE3.SA",
-    "BBAS3.SA",
-    "^BVSP"
-  ],
-  "usa": [
-    "AAPL",
-    "MSFT",
-    "GOOGL",
-    "AMZN",
-    "^GSPC"
-  ],
-  "crypto": [
-    "BTC-USD",
-    "ETH-USD",
-    "SOL-USD"
-  ]
+"brasil": ["PETR4.SA", "VALE3.SA", "BBAS3.SA", "^BVSP"],
+"usa": ["AAPL", "MSFT", "GOOGL", "AMZN", "^GSPC"],
+"crypto": ["BTC-USD", "ETH-USD", "SOL-USD"]
 }
