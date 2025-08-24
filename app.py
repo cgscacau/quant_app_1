@@ -15,15 +15,15 @@ import streamlit as st
 from scipy.stats import norm
 
 # Imports do projeto (pasta core/)
-from core.data import download_prices, add_features
-from core.models_arima import ARIMAModel
-from core.models_garch import GARCHModel
-from core.models_rf import RandomForestSignal
-from core.models_trend import TrendScoreModel
-from core.ensemble import weighted_ensemble
-from core.risk import entry_stop_gain, position_size, kelly_fraction
-from core.backtest import simulate_prob_strategy
-from core.visual import price_candles, line_series
+    from core.data import download_prices, add_features
+    from core.models_arima import ARIMAModel
+    from core.models_garch import GARCHModel
+    from core.models_rf import RandomForestSignal
+    from core.models_trend import TrendScoreModel
+    from core.ensemble import weighted_ensemble
+    from core.risk import entry_stop_gain, position_size, kelly_fraction
+    from core.backtest import simulate_prob_strategy
+    from core.visual import price_candles, line_series
 
 
 # [BLOCO 1] — Configuração visual
