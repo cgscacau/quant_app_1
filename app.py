@@ -124,10 +124,26 @@ if direction != "NEUTRAL":
     c8.metric("Qtd. sugerida", f"{qty:,}")
     st.caption(f"Kelly fracionado sugerido: **{kelly_f:.2%}** (use fração conservadora, ex. 0.5x).")
 
+import json
 st.markdown("### Explicação dos Modelos")
 for name, res in explanations:
     with st.expander(f"{name} — detalhes"):
-        st.write(res)
+        if name == "RandomForest":
+            # Tabela do classification_report
+            rep = res.get("report", {})
+            if rep:
+                rep_df = pd.DataFrame(rep).T
+                st.dataframe(rep_df.style.format("{:.4f}"))
+            # Importância das features
+            fi = res.get("feature_importances", {})
+            if fi:
+                st.bar_chart(pd.Series(fi, name="importance"))
+            # Demais campos do resultado (sem objetos grandes)
+            small = {k: v for k, v in res.items() if k not in ("report", "feature_importances")}
+            st.code(json.dumps(small, indent=2, ensure_ascii=False))
+        else:
+            # Modelos simples: renderiza como JSON legível
+            st.code(json.dumps(res, indent=2, ensure_ascii=False))
 
 st.markdown("### Backtest — Período de Teste")
 prob_series = pd.Series(index=test.index, dtype=float).fillna(0.5)
