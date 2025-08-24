@@ -80,11 +80,18 @@ if use_garch:
     results.append(res_g)
     explanations.append(("GARCH", res_g))
 
-if use_rf:
-    rf = RandomForestSignal().fit(train, test)
-    res_rf = rf.predict_next(df)
-    results.append(res_rf)
-    explanations.append(("RandomForest", res_rf))
+from sklearn.metrics import roc_auc_score, confusion_matrix
+# reconstruir X/y do teste p/ métricas
+Xte, yte, _ = RandomForestSignal()._build_Xy(test)
+if len(Xte) > 0:
+    Xte_s = rf.scaler.transform(Xte)
+    yprob = rf.model.predict_proba(Xte_s)[:,1]
+    yhat = (yprob >= 0.5).astype(int)
+    auc = roc_auc_score(yte, yprob)
+    cm = pd.DataFrame(confusion_matrix(yte, yhat), index=['Actual 0','Actual 1'], columns=['Pred 0','Pred 1'])
+    st.metric("ROC AUC (teste)", f"{auc:.3f}")
+    st.dataframe(cm)
+
 
 if use_trend:
     trend = TrendScoreModel().fit(train, test)
