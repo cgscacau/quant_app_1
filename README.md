@@ -1,1 +1,2 @@
-# quant_app_1
+# Quant App — Ensemble de Métodos com Gestão de Risco
+Ver README anterior.
