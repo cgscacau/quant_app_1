@@ -1,10 +1,10 @@
 # ============================================================================ #
-# app.py — Quant App (UI moderna, blocos bem separados)
+# app.py — Quant App (UI moderna, blocos claros e indentação consistente)
 # ============================================================================ #
 
-# app.py — cabeçalho mínimo (cole a partir DAQUI)
-
 from __future__ import annotations
+
+# [BLOCO 0] — Imports padrão (sem NADA antes destas linhas)
 import json
 from datetime import date, timedelta
 from typing import Dict, List
@@ -14,7 +14,7 @@ import pandas as pd
 import streamlit as st
 from scipy.stats import norm
 
-# --- imports internos (sem NADA antes deles) ---
+# Imports do projeto (pasta core/)
 from core.data import download_prices, add_features
 from core.models_arima import ARIMAModel
 from core.models_garch import GARCHModel
@@ -25,65 +25,65 @@ from core.risk import entry_stop_gain, position_size, kelly_fraction
 from core.backtest import simulate_prob_strategy
 from core.visual import price_candles, line_series
 
-# sanity check — pode apagar depois:
-st.set_page_config(page_title="Quant App", layout="wide")
-st.write("✅ Imports OK")
 
+# [BLOCO 1] — Configuração visual
+st.set_page_config(page_title="Quant App — Ensemble & Risco", layout="wide")
 
-# =============================== Aparência global ===============================
 CARD_BG = "#0f1116"
 CARD_BD = "#2a2f3a"
+
 st.markdown(
-    f"""
+    """
     <style>
-      .card {{ background:{CARD_BG}; border:1px solid {CARD_BD}; border-radius:16px; padding:16px; margin:8px 0; }}
-      .card h4 {{ margin:0 0 10px 0; font-weight:700; }}
-      .kpi  {{ font-size:28px; font-weight:700; }}
-      .sub  {{ opacity:.8; font-size:12px; }}
-      pre.pretty {{ background:#131622; border-radius:12px; padding:12px; }}
+      .card { background:#0f1116; border:1px solid #2a2f3a; border-radius:16px;
+              padding:16px; margin:8px 0; }
+      .card h4 { margin:0 0 10px 0; font-weight:700; }
+      .kpi  { font-size:28px; font-weight:700; }
+      .sub  { opacity:.8; font-size:12px; }
+      pre.pretty { background:#131622; border-radius:12px; padding:12px; }
     </style>
     """,
     unsafe_allow_html=True,
 )
 
-# === [BLOCO 2] — Sidebar: parâmetros do usuário ============================= #
+
+# [BLOCO 2] — Sidebar (parâmetros)
 with st.sidebar:
     st.header("⚙️ Configurações")
 
-    # Tickers disponíveis
+    # Universo e ativo
     with open("assets/tickers.json", "r", encoding="utf-8") as f:
         TICKERS = json.load(f)
-
-    col_u, col_t = st.columns(2)
-    with col_u:
+    c1, c2 = st.columns(2)
+    with c1:
         universo = st.selectbox("Universo", list(TICKERS.keys()), index=0)
-    with col_t:
+    with c2:
         ticker = st.selectbox("Ativo", TICKERS[universo], index=0)
 
-    # Janela de dados
+    # Janela temporal
     today = date.today()
     d_start = st.date_input("Data inicial", value=today - timedelta(days=365 * 5))
     d_end = st.date_input("Data final", value=today)
     interval = st.selectbox("Intervalo", ["1d", "1h", "1wk"], index=0)
 
-    # Split treino/teste
+    # Treino vs. teste
     st.subheader("Treino vs. Teste")
     train_end_ratio = st.slider("Proporção de Treino", 0.5, 0.9, 0.7, 0.05)
 
     # Modelos e pesos
     st.subheader("Modelos do Ensemble")
-    use_arima = st.checkbox("ARIMA (time-series)", True)
-    use_garch = st.checkbox("GARCH (volatilidade)", True)
-    use_rf = st.checkbox("RandomForest (ML)", True)
-    use_trend = st.checkbox("Trend Score (Logit)", True)
+    use_arima = st.checkbox("ARIMA", True)
+    use_garch = st.checkbox("GARCH", True, help="Direção neutra; ajuda a medir risco.")
+    use_rf = st.checkbox("RandomForest", True)
+    use_trend = st.checkbox("TrendScore (Logit)", True)
 
-    st.caption("Pesos definem a influência no ensemble.")
+    st.caption("Pesos definem a influência de cada modelo no ensemble.")
     w_arima = st.slider("Peso ARIMA", 0.0, 1.0, 0.30, 0.05)
     w_garch = st.slider("Peso GARCH", 0.0, 1.0, 0.10, 0.05)
     w_rf = st.slider("Peso RF", 0.0, 1.0, 0.40, 0.05)
     w_trend = st.slider("Peso Trend", 0.0, 1.0, 0.20, 0.05)
 
-    # Gestão de risco
+    # Risco
     st.subheader("Gestão de Risco")
     capital = st.number_input("Capital (BRL/USD)", 100000.0, step=1000.0)
     risk_perc = st.slider("Risco por trade (%)", 0.0025, 0.05, 0.01, 0.0025)
@@ -91,30 +91,28 @@ with st.sidebar:
     rr = st.slider("Risco:Retorno (R)", 1.0, 5.0, 2.0, 0.5)
     th_buy = st.slider("Threshold BUY", 0.50, 0.90, 0.55, 0.01)
     th_sell = st.slider("Threshold SELL", 0.10, 0.50, 0.45, 0.01)
-    st.caption("Dica: 0.52/0.48 = mais trades; 0.60/0.40 = mais conservador.")
+    st.caption("Dica: 0.52/0.48 = agressivo; 0.60/0.40 = conservador.")
 
 
-# === [BLOCO 3] — Carregamento e features ==================================== #
+# [BLOCO 3] — Dados e features
 st.title("📈 Quant App — Ensemble de Métodos com Gestão de Risco")
-st.caption("Combine modelos para gerar probabilidade de alta, sinal e plano de trade. Faça backtest no período de teste.")
+st.caption("Combine modelos para gerar probabilidade, direção e plano de trade. Faça backtest no período de teste.")
 
 with st.spinner("Baixando dados e calculando features..."):
     px = download_prices(ticker, str(d_start), str(d_end), interval=interval)
     if len(px) < 250:
-        st.warning("Poucos dados retornados — amplie o período ou troque o intervalo.")
+        st.warning("Poucos dados — amplie o período ou troque o intervalo.")
     df = add_features(px)
 
-# Split treino/teste pelo percentual
 split_idx = max(10, int(len(df) * train_end_ratio))
 train = df.iloc[:split_idx].copy()
 test = df.iloc[split_idx:].copy()
 
-# Gráfico de preço
 st.subheader("Preço")
 st.plotly_chart(price_candles(df), use_container_width=True)
 
 
-# === [BLOCO 4] — Treino/predição (ponto atual) ============================== #
+# [BLOCO 4] — Modelagem (ponto atual)
 results: List[Dict] = []
 explain: List = []
 
@@ -142,13 +140,11 @@ if use_trend:
     results.append(res_t)
     explain.append(("Trend", res_t))
 
-# Ensemble atual (agora)
 weights_cfg = {"ARIMA": w_arima, "GARCH": w_garch, "RandomForest": w_rf, "TrendScore": w_trend}
 ens_now = weighted_ensemble(results, weights_cfg)
 p_up_now = ens_now["prob_up"]
 signal_now = "BUY" if p_up_now >= th_buy else ("SELL" if p_up_now <= th_sell else "NEUTRAL")
 
-# KPI cards
 last_close = float(df["Close"].iloc[-1])
 last_atr = float(df["ATR14"].iloc[-1])
 
@@ -160,14 +156,15 @@ if signal_now != "NEUTRAL":
     qty = position_size(capital, entry, stop, risk_perc)
     kelly_f = kelly_fraction(p_up_now if signal_now == "BUY" else (1 - p_up_now), rr)
 
-c1, c2, c3, c4 = st.columns(4)
-with c1:
+# KPIs
+k1, k2, k3, k4 = st.columns(4)
+with k1:
     st.markdown(f"<div class='card'><div class='sub'>Prob. de Alta</div><div class='kpi'>{p_up_now:.1%}</div></div>", unsafe_allow_html=True)
-with c2:
+with k2:
     st.markdown(f"<div class='card'><div class='sub'>Sinal</div><div class='kpi'>{signal_now}</div></div>", unsafe_allow_html=True)
-with c3:
+with k3:
     st.markdown(f"<div class='card'><div class='sub'>Último Close</div><div class='kpi'>{last_close:,.2f}</div></div>", unsafe_allow_html=True)
-with c4:
+with k4:
     st.markdown(f"<div class='card'><div class='sub'>ATR(14)</div><div class='kpi'>{last_atr:,.2f}</div></div>", unsafe_allow_html=True)
 
 if signal_now != "NEUTRAL":
@@ -183,9 +180,8 @@ if signal_now != "NEUTRAL":
     st.caption(f"Kelly fracionado sugerido: **{kelly_f:.2%}** (use fração conservadora, ex. 0.5×).")
 
 
-# === [BLOCO 5] — Helpers para probabilidade por barra ======================= #
+# [BLOCO 5] — Helpers (séries de prob. por barra)
 def _to_series(x, index, name=None) -> pd.Series:
-    """Converte escalar/array/Series para Series alinhada ao índice."""
     if isinstance(x, pd.Series):
         return x.reindex(index).astype(float)
     arr = np.asarray(x).reshape(-1)
@@ -228,12 +224,12 @@ def ps_trend(tr_obj: TrendScoreModel, train_df: pd.DataFrame, test_df: pd.DataFr
     return s.reindex(test_df.index).ffill().bfill().astype(float)
 
 
-# === [BLOCO 6] — Abas ======================================================== #
+# [BLOCO 6] — Abas
 tab_models, tab_bt, tab_trades, tab_probs = st.tabs(
     ["🧠 Modelos", "🔁 Backtest", "🧾 Trades", "📈 Probabilidades"]
 )
 
-# -- [6.1] Modelos: cards modernos ------------------------------------------ #
+# 6.1 — Modelos
 with tab_models:
     st.subheader("Explicação dos Modelos — Cards Modernos")
 
@@ -256,19 +252,17 @@ with tab_models:
             render_model_card("GARCH", res, "#FFB347")
 
         elif name == "RandomForest":
-            # card resumido + relatório e importâncias
             body = {k: v for k, v in res.items() if k not in ("report", "feature_importances")}
             render_model_card("RandomForest", body, "#8FA3FF")
 
-            report = res.get("report") or {}
-            if isinstance(report, dict) and report:
-                rep_df = pd.DataFrame(report).T
+            rep = res.get("report") or {}
+            if isinstance(rep, dict) and rep:
+                rep_df = pd.DataFrame(rep).T
                 st.dataframe(rep_df.style.format("{:.4f}"))
 
             fi = res.get("feature_importances") or {}
             if isinstance(fi, dict) and fi:
                 st.bar_chart(pd.Series(fi, name="Importância"))
-                st.caption("Importância das features no RandomForest.")
 
         elif name == "Trend":
             body = {k: v for k, v in res.items() if k != "coefficients"}
@@ -278,7 +272,7 @@ with tab_models:
             if isinstance(coefs, dict) and coefs:
                 st.bar_chart(pd.Series(coefs, name="Coeficientes"))
 
-# -- [6.2] Backtest ---------------------------------------------------------- #
+# 6.2 — Backtest
 with tab_bt:
     st.subheader("Backtest — Período de Teste")
 
@@ -286,23 +280,17 @@ with tab_bt:
     cols: List[str] = []
 
     if use_arima:
-        probs.append(ps_arima(arima, test))
-        cols.append("ARIMA")
+        probs.append(ps_arima(arima, test)); cols.append("ARIMA")
     if use_rf:
-        probs.append(ps_rf(rf, train, test))
-        cols.append("RandomForest")
+        probs.append(ps_rf(rf, train, test)); cols.append("RandomForest")
     if use_trend:
-        probs.append(ps_trend(trend, train, test))
-        cols.append("TrendScore")
+        probs.append(ps_trend(trend, train, test)); cols.append("TrendScore")
     if use_garch:
-        probs.append(_to_series(0.5, test.index, "GARCH"))
-        cols.append("GARCH")
+        probs.append(_to_series(0.5, test.index, "GARCH")); cols.append("GARCH")
     if not probs:
-        probs = [_to_series(0.5, test.index, "Fallback")]
-        cols = ["Fallback"]
+        probs = [_to_series(0.5, test.index, "Fallback")]; cols = ["Fallback"]
 
-    probs_df = pd.concat(probs, axis=1)
-    probs_df.columns = cols
+    probs_df = pd.concat(probs, axis=1); probs_df.columns = cols
 
     w_cfg = {"ARIMA": w_arima, "GARCH": w_garch, "RandomForest": w_rf, "TrendScore": w_trend}
     present = [c for c in probs_df.columns if w_cfg.get(c, 0) > 0] or probs_df.columns.tolist()
@@ -334,12 +322,11 @@ with tab_bt:
         unsafe_allow_html=True,
     )
 
-    # guarda para as outras abas
     st.session_state["prob_series"] = prob_series
     st.session_state["probs_df"] = probs_df
     st.session_state["blotter"] = blotter
 
-# -- [6.3] Trades ------------------------------------------------------------ #
+# 6.3 — Trades
 with tab_trades:
     st.subheader("Blotter de Trades")
     blotter_df = st.session_state.get("blotter", pd.DataFrame())
@@ -352,9 +339,9 @@ with tab_trades:
             mime="text/csv",
         )
     else:
-        st.info("Sem trades no período/configuração atual. Ajuste thresholds/pesos para gerar sinais.")
+        st.info("Sem trades no período/configuração atual.")
 
-# -- [6.4] Probabilidades ---------------------------------------------------- #
+# 6.4 — Probabilidades
 with tab_probs:
     st.subheader("Série de Probabilidades")
     prob_series = st.session_state.get("prob_series", None)
@@ -364,6 +351,5 @@ with tab_probs:
     if isinstance(probs_df, pd.DataFrame):
         st.dataframe(probs_df.tail(12))
 
-
-# === [BLOCO 7] — Rodapé ===================================================== #
-st.caption("Protótipo educacional. Para produção: custos/deslizamento, walk-forward, tuning e validação rigorosa.")
+# [BLOCO 7] — Rodapé
+st.caption("Protótipo educacional. Para produção: custos/slippage, walk-forward, tuning e validação rigorosa.")
