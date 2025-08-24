@@ -1,20 +1,20 @@
 # ============================================================================ #
-# app.py — Quant App (UI moderna, blocos claros e indentação consistente)
+# app.py — Quant App (UI moderna, blocos bem separados e robustos)
 # ============================================================================ #
 
 from __future__ import annotations
 
-# [BLOCO 0] — Imports padrão (sem NADA antes destas linhas)
+# [BLOCO 0] — IMPORTS (não deve haver NADA antes destas linhas)
 import json
 from datetime import date, timedelta
-from typing import Dict, List
+from typing import Dict, List, Tuple
 
 import numpy as np
 import pandas as pd
 import streamlit as st
 from scipy.stats import norm
 
-# Imports do projeto (pasta core/)
+# Módulos do projeto (pasta core/)
 from core.data import download_prices, add_features
 from core.models_arima import ARIMAModel
 from core.models_garch import GARCHModel
@@ -26,7 +26,7 @@ from core.backtest import simulate_prob_strategy
 from core.visual import price_candles, line_series
 
 
-# [BLOCO 1] — Configuração visual
+# [BLOCO 1] — CONFIG VISUAL
 st.set_page_config(page_title="Quant App — Ensemble & Risco", layout="wide")
 
 CARD_BG = "#0f1116"
@@ -47,11 +47,11 @@ st.markdown(
 )
 
 
-# [BLOCO 2] — Sidebar (parâmetros)
+# [BLOCO 2] — SIDEBAR (parâmetros do usuário)
 with st.sidebar:
     st.header("⚙️ Configurações")
 
-    # Universo e ativo
+    # Universo / ticker
     with open("assets/tickers.json", "r", encoding="utf-8") as f:
         TICKERS = json.load(f)
     c1, c2 = st.columns(2)
@@ -66,18 +66,18 @@ with st.sidebar:
     d_end = st.date_input("Data final", value=today)
     interval = st.selectbox("Intervalo", ["1d", "1h", "1wk"], index=0)
 
-    # Treino vs. teste
+    # Split treino/teste
     st.subheader("Treino vs. Teste")
     train_end_ratio = st.slider("Proporção de Treino", 0.5, 0.9, 0.7, 0.05)
 
-    # Modelos e pesos
+    # Modelos & pesos
     st.subheader("Modelos do Ensemble")
     use_arima = st.checkbox("ARIMA", True)
-    use_garch = st.checkbox("GARCH", True, help="Direção neutra; ajuda a medir risco.")
-    use_rf = st.checkbox("RandomForest", True)
+    use_garch = st.checkbox("GARCH (volatilidade)", True)
+    use_rf = st.checkbox("RandomForest (ML)", True)
     use_trend = st.checkbox("TrendScore (Logit)", True)
 
-    st.caption("Pesos definem a influência de cada modelo no ensemble.")
+    st.caption("Pesos controlam a influência de cada modelo no ensemble.")
     w_arima = st.slider("Peso ARIMA", 0.0, 1.0, 0.30, 0.05)
     w_garch = st.slider("Peso GARCH", 0.0, 1.0, 0.10, 0.05)
     w_rf = st.slider("Peso RF", 0.0, 1.0, 0.40, 0.05)
@@ -94,7 +94,7 @@ with st.sidebar:
     st.caption("Dica: 0.52/0.48 = agressivo; 0.60/0.40 = conservador.")
 
 
-# [BLOCO 3] — Dados e features
+# [BLOCO 3] — DADOS & FEATURES
 st.title("📈 Quant App — Ensemble de Métodos com Gestão de Risco")
 st.caption("Combine modelos para gerar probabilidade, direção e plano de trade. Faça backtest no período de teste.")
 
@@ -112,37 +112,89 @@ st.subheader("Preço")
 st.plotly_chart(price_candles(df), use_container_width=True)
 
 
-# [BLOCO 4] — Modelagem (ponto atual)
-results: List[Dict] = []
-explain: List = []
+# [BLOCO 4] — HELPERS ROBUSTOS (evitam concat de ndarray e NaN)
+def _to_series(x, index: pd.Index, name: str) -> pd.Series:
+    """
+    Garante saída como Series alinhada a `index`.
+    - escalar → série constante
+    - ndarray/list → série alinhada (corta/preenche)
+    - Series → reindex
+    """
+    if isinstance(x, pd.Series):
+        return x.reindex(index).astype(float)
+
+    arr = np.asarray(x).reshape(-1)
+    if arr.size == 1:
+        return pd.Series([float(arr[0])] * len(index), index=index, name=name)
+
+    if arr.size != len(index):
+        s = pd.Series(arr, index=index[: arr.size], name=name).astype(float)
+        return s.reindex(index).ffill().bfill()
+    return pd.Series(arr, index=index, name=name).astype(float)
+
+
+def ps_arima_series(model: ARIMAModel, test_df: pd.DataFrame) -> pd.Series:
+    """Prob(Up) diária a partir do ARIMA (mu, sigma → P(r>0))."""
+    f = model.res_.get_forecast(steps=len(test_df))
+    mu = pd.Series(f.predicted_mean, index=test_df.index)
+    sigma = pd.Series(f.se_mean, index=test_df.index).replace(0, 1e-6)
+    p = 1.0 - norm.cdf(0.0, loc=mu, scale=sigma)
+    return _to_series(p, test_df.index, "ARIMA")
+
+
+def ps_rf_series(model: RandomForestSignal, train_df: pd.DataFrame, test_df: pd.DataFrame) -> pd.Series:
+    """Prob(Up) do RandomForest para o período de teste (alinhado)."""
+    X_all, _, _ = model._build_Xy(pd.concat([train_df, test_df]))
+    idx = test_df.index[:-1]  # previne look-ahead
+    X_test = X_all.reindex(idx).dropna()
+    if len(X_test) == 0:
+        return _to_series(0.5, test_df.index, "RandomForest")
+    Xs = model.scaler.transform(X_test)
+    p = model.model.predict_proba(Xs)[:, 1]
+    s = pd.Series(p, index=X_test.index, name="RandomForest")
+    return _to_series(s, test_df.index, "RandomForest")
+
+
+def ps_trend_series(model: TrendScoreModel, train_df: pd.DataFrame, test_df: pd.DataFrame) -> pd.Series:
+    """Prob(Up) do TrendScore (logit) para o período de teste."""
+    F_all = model._features(pd.concat([train_df, test_df]))
+    idx = test_df.index[:-1]
+    X_test = F_all.reindex(idx).dropna()
+    if len(X_test) == 0:
+        return _to_series(0.5, test_df.index, "TrendScore")
+    p = model.clf.predict_proba(X_test)[:, 1]
+    s = pd.Series(p, index=X_test.index, name="TrendScore")
+    return _to_series(s, test_df.index, "TrendScore")
+
+
+# [BLOCO 5] — TREINO/PREVISÃO (ponto atual) + KPI CARDS
+results_now: List[Dict] = []   # para ensemble instantâneo (última barra)
+explain: List[Tuple[str, Dict]] = []
+models: Dict[str, object] = {}
 
 if use_arima:
     arima = ARIMAModel(order=(1, 0, 0)).fit(train)
-    res_a = arima.predict_next(df)
-    results.append(res_a)
-    explain.append(("ARIMA", res_a))
+    res_a = arima.predict_next(df)  # dict resumido (mu/sigma/prob_up)
+    results_now.append(res_a); explain.append(("ARIMA", res_a)); models["ARIMA"] = arima
 
 if use_garch:
     garch = GARCHModel().fit(train)
     res_g = garch.predict_next(df)
-    results.append(res_g)
-    explain.append(("GARCH", res_g))
+    results_now.append(res_g); explain.append(("GARCH", res_g)); models["GARCH"] = garch
 
 if use_rf:
     rf = RandomForestSignal().fit(train, test)
     res_rf = rf.predict_next(df)
-    results.append(res_rf)
-    explain.append(("RandomForest", res_rf))
+    results_now.append(res_rf); explain.append(("RandomForest", res_rf)); models["RandomForest"] = rf
 
 if use_trend:
     trend = TrendScoreModel().fit(train, test)
     res_t = trend.predict_next(df)
-    results.append(res_t)
-    explain.append(("Trend", res_t))
+    results_now.append(res_t); explain.append(("Trend", res_t)); models["TrendScore"] = trend
 
 weights_cfg = {"ARIMA": w_arima, "GARCH": w_garch, "RandomForest": w_rf, "TrendScore": w_trend}
-ens_now = weighted_ensemble(results, weights_cfg)
-p_up_now = ens_now["prob_up"]
+ens_now = weighted_ensemble(results_now, weights_cfg)  # usa os dicts “now”
+p_up_now = float(ens_now.get("prob_up", 0.5))
 signal_now = "BUY" if p_up_now >= th_buy else ("SELL" if p_up_now <= th_sell else "NEUTRAL")
 
 last_close = float(df["Close"].iloc[-1])
@@ -180,60 +232,16 @@ if signal_now != "NEUTRAL":
     st.caption(f"Kelly fracionado sugerido: **{kelly_f:.2%}** (use fração conservadora, ex. 0.5×).")
 
 
-# [BLOCO 5] — Helpers (séries de prob. por barra)
-def _to_series(x, index, name=None) -> pd.Series:
-    if isinstance(x, pd.Series):
-        return x.reindex(index).astype(float)
-    arr = np.asarray(x).reshape(-1)
-    if arr.size == 1:
-        return pd.Series([float(arr[0])] * len(index), index=index, name=name)
-    if arr.size != len(index):
-        s = pd.Series(arr, index=index[:arr.size], name=name)
-        return s.reindex(index).ffill().bfill().astype(float)
-    return pd.Series(arr, index=index, name=name).astype(float)
-
-
-def ps_arima(arima_obj: ARIMAModel, test_df: pd.DataFrame) -> pd.Series:
-    f = arima_obj.res_.get_forecast(steps=len(test_df))
-    mu = pd.Series(f.predicted_mean, index=test_df.index)
-    sigma = pd.Series(f.se_mean, index=test_df.index).replace(0, 1e-6)
-    p = 1.0 - norm.cdf(0.0, loc=mu, scale=sigma)
-    return _to_series(p, test_df.index, "ARIMA")
-
-
-def ps_rf(rf_obj: RandomForestSignal, train_df: pd.DataFrame, test_df: pd.DataFrame) -> pd.Series:
-    X_all, _, _ = rf_obj._build_Xy(pd.concat([train_df, test_df]))
-    idx = test_df.index[:-1]
-    X_test = X_all.reindex(idx).dropna()
-    if len(X_test) == 0:
-        return _to_series(0.5, test_df.index, "RandomForest")
-    Xs = rf_obj.scaler.transform(X_test)
-    p = rf_obj.model.predict_proba(Xs)[:, 1]
-    s = pd.Series(p, index=X_test.index, name="RandomForest")
-    return s.reindex(test_df.index).ffill().bfill().astype(float)
-
-
-def ps_trend(tr_obj: TrendScoreModel, train_df: pd.DataFrame, test_df: pd.DataFrame) -> pd.Series:
-    F_all = tr_obj._features(pd.concat([train_df, test_df]))
-    idx = test_df.index[:-1]
-    X_test = F_all.reindex(idx).dropna()
-    if len(X_test) == 0:
-        return _to_series(0.5, test_df.index, "TrendScore")
-    p = tr_obj.clf.predict_proba(X_test)[:, 1]
-    s = pd.Series(p, index=X_test.index, name="TrendScore")
-    return s.reindex(test_df.index).ffill().bfill().astype(float)
-
-
-# [BLOCO 6] — Abas
+# [BLOCO 6] — ABAS
 tab_models, tab_bt, tab_trades, tab_probs = st.tabs(
     ["🧠 Modelos", "🔁 Backtest", "🧾 Trades", "📈 Probabilidades"]
 )
 
-# 6.1 — Modelos
+# 6.1 — MODELOS (cards bonitos)
 with tab_models:
     st.subheader("Explicação dos Modelos — Cards Modernos")
 
-    def render_model_card(name: str, payload: dict, color: str) -> None:
+    def render_card(name: str, payload: dict, color: str) -> None:
         st.markdown(
             f"""
             <div class='card' style='border-color:{color};'>
@@ -246,14 +254,14 @@ with tab_models:
 
     for name, res in explain:
         if name == "ARIMA":
-            render_model_card("ARIMA", res, "#7BD389")
+            render_card("ARIMA", res, "#7BD389")
 
         elif name == "GARCH":
-            render_model_card("GARCH", res, "#FFB347")
+            render_card("GARCH", res, "#FFB347")
 
         elif name == "RandomForest":
             body = {k: v for k, v in res.items() if k not in ("report", "feature_importances")}
-            render_model_card("RandomForest", body, "#8FA3FF")
+            render_card("RandomForest", body, "#8FA3FF")
 
             rep = res.get("report") or {}
             if isinstance(rep, dict) and rep:
@@ -266,31 +274,36 @@ with tab_models:
 
         elif name == "Trend":
             body = {k: v for k, v in res.items() if k != "coefficients"}
-            render_model_card("TrendScore", body, "#F06292")
+            render_card("TrendScore", body, "#F06292")
 
             coefs = res.get("coefficients") or {}
             if isinstance(coefs, dict) and coefs:
                 st.bar_chart(pd.Series(coefs, name="Coeficientes"))
 
-# 6.2 — Backtest
+
+# 6.2 — BACKTEST (gera séries de prob. SEMPRE como Series)
 with tab_bt:
     st.subheader("Backtest — Período de Teste")
 
-    probs: List[pd.Series] = []
+    probs_list: List[pd.Series] = []
     cols: List[str] = []
 
-    if use_arima:
-        probs.append(ps_arima(arima, test)); cols.append("ARIMA")
-    if use_rf:
-        probs.append(ps_rf(rf, train, test)); cols.append("RandomForest")
-    if use_trend:
-        probs.append(ps_trend(trend, train, test)); cols.append("TrendScore")
-    if use_garch:
-        probs.append(_to_series(0.5, test.index, "GARCH")); cols.append("GARCH")
-    if not probs:
-        probs = [_to_series(0.5, test.index, "Fallback")]; cols = ["Fallback"]
+    if use_arima and "ARIMA" in models:
+        probs_list.append(ps_arima_series(models["ARIMA"], test)); cols.append("ARIMA")
+    if use_rf and "RandomForest" in models:
+        probs_list.append(ps_rf_series(models["RandomForest"], train, test)); cols.append("RandomForest")
+    if use_trend and "TrendScore" in models:
+        probs_list.append(ps_trend_series(models["TrendScore"], train, test)); cols.append("TrendScore")
+    if use_garch and "GARCH" in models:
+        # direção neutra → 0.5 ajuda a ponderar risco
+        probs_list.append(_to_series(0.5, test.index, "GARCH")); cols.append("GARCH")
 
-    probs_df = pd.concat(probs, axis=1); probs_df.columns = cols
+    if not probs_list:
+        probs_list = [_to_series(0.5, test.index, "Fallback")]
+        cols = ["Fallback"]
+
+    probs_df = pd.concat(probs_list, axis=1)
+    probs_df.columns = cols
 
     w_cfg = {"ARIMA": w_arima, "GARCH": w_garch, "RandomForest": w_rf, "TrendScore": w_trend}
     present = [c for c in probs_df.columns if w_cfg.get(c, 0) > 0] or probs_df.columns.tolist()
@@ -322,11 +335,13 @@ with tab_bt:
         unsafe_allow_html=True,
     )
 
+    # guarda p/ outras abas
     st.session_state["prob_series"] = prob_series
     st.session_state["probs_df"] = probs_df
     st.session_state["blotter"] = blotter
 
-# 6.3 — Trades
+
+# 6.3 — TRADES
 with tab_trades:
     st.subheader("Blotter de Trades")
     blotter_df = st.session_state.get("blotter", pd.DataFrame())
@@ -339,9 +354,10 @@ with tab_trades:
             mime="text/csv",
         )
     else:
-        st.info("Sem trades no período/configuração atual.")
+        st.info("Sem trades para o período/configuração atual.")
 
-# 6.4 — Probabilidades
+
+# 6.4 — PROBABILIDADES
 with tab_probs:
     st.subheader("Série de Probabilidades")
     prob_series = st.session_state.get("prob_series", None)
@@ -351,5 +367,8 @@ with tab_probs:
     if isinstance(probs_df, pd.DataFrame):
         st.dataframe(probs_df.tail(12))
 
-# [BLOCO 7] — Rodapé
-st.caption("Protótipo educacional. Para produção: custos/slippage, walk-forward, tuning e validação rigorosa.")
+
+# [BLOCO 7] — RODAPÉ
+st.caption(
+    "Protótipo educacional. Para produção: custos/slippage, walk-forward, tuning e validação rigorosa."
+)
