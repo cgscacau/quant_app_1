@@ -14,7 +14,7 @@ import pandas as pd
 import streamlit as st
 from scipy.stats import norm
 
-# modelagem
+# Modelagem
 from sklearn.preprocessing import StandardScaler
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.calibration import CalibratedClassifierCV
@@ -22,10 +22,10 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import classification_report
 from statsmodels.tsa.arima.model import ARIMA
 
-# dados
+# Dados
 import yfinance as yf
 
-# opcional: GARCH via arch
+# Opcional: GARCH via arch (app segue funcionando se faltar)
 try:
     from arch import arch_model
     HAVE_ARCH = True
@@ -37,21 +37,44 @@ except Exception:
 st.set_page_config(page_title="Quant App — Ensemble & Risco (single-file)", layout="wide")
 st.markdown("""
 <style>
-  .card {background:#0f1116;border:1px solid #2a2f3a;border-radius:16px;padding:16px;margin:8px 0}
-  .card h4{margin:0 0 10px 0;font-weight:700}
-  .kpi{font-size:28px;font-weight:700}
-  .sub{opacity:.8;font-size:12px}
-  pre.pretty{background:#131622;border-radius:12px;padding:12px}
+  :root {
+    --bg:#0f1116; --bd:#222733; --muted:#9aa4b2;
+    --ok:#7BD389; --warn:#FFB347; --info:#8FA3FF; --trend:#F06292;
+  }
+  .card {background:var(--bg); border:1px solid var(--bd); border-radius:16px; padding:16px; margin:10px 0}
+  .kpi-title{font-size:12px; color:var(--muted); margin-bottom:6px}
+  .kpi-value{font-size:28px; font-weight:800}
+  .pill{display:inline-block; padding:2px 10px; border:1px solid var(--bd); border-radius:999px; font-size:12px; color:var(--muted); margin-right:6px}
+  pre.pretty{background:#121622; border:1px solid var(--bd); border-radius:12px; padding:12px; font-size:12px}
 </style>
 """, unsafe_allow_html=True)
 
+def metric_card(title:str, value:str, sub:str="", color:str=None):
+    c = "" if not color else f"style='color:{color}'"
+    st.markdown(
+        f"<div class='card'>"
+        f"<div class='kpi-title'>{title}</div>"
+        f"<div class='kpi-value' {c}>{value}</div>"
+        f"<div style='color:var(--muted);font-size:12px;margin-top:8px'>{sub}</div>"
+        f"</div>", unsafe_allow_html=True
+    )
 
-# ------------------------- [BLOCO 2] Utilidades ------------------------------
+def section_card(title:str, color:str, body_html:str):
+    st.markdown(
+        f"<div class='card' style='border-color:{color}'>"
+        f"<h4 style='margin:0 0 10px 0; color:{color}'>🧠 {title}</h4>"
+        f"{body_html}"
+        f"</div>", unsafe_allow_html=True
+    )
+
+
+# ------------------------- [BLOCO 2] Utilidades de Dados/Gráficos ------------
+
 def download_prices(ticker: str, start: str, end: str, interval: str = "1d") -> pd.DataFrame:
     """
     Baixa preços do Yahoo e GARANTE colunas planas:
-    Open, High, Low, Close, Adj Close (opcional), Volume.
-    Lida com MultiIndex (('Open','AAPL'), ...) e com nomes estranhos.
+    Open, High, Low, Close, Volume (e Adj Close se existir).
+    Lida com MultiIndex (('Open','AAPL'), ...) e nomes estranhos.
     """
     df = yf.download(
         ticker, start=start, end=end, interval=interval,
@@ -62,25 +85,21 @@ def download_prices(ticker: str, start: str, end: str, interval: str = "1d") -> 
     if not isinstance(df.index, pd.DatetimeIndex):
         df.index = pd.to_datetime(df.index)
 
-    # Se vier MultiIndex, seleciona o nível do ticker (último) ou achata
+    # MultiIndex → achata
     if isinstance(df.columns, pd.MultiIndex):
-        # caso comum: nível -1 é o ticker; pegamos só ele
         tickers_level = df.columns.get_level_values(-1)
         if ticker in tickers_level:
             df = df.xs(ticker, axis=1, level=-1)
         else:
-            # fallback: mantém apenas o nível 0 (OHLCV)
             df.columns = df.columns.get_level_values(0)
 
     # Normaliza nomes
     cols_map = {c: str(c).title() for c in df.columns}
     df = df.rename(columns=cols_map)
 
-    # Algumas vezes “Adj Close” fica separado; preferimos “Close”
     if "Adj Close" in df.columns and "Close" not in df.columns:
         df = df.rename(columns={"Adj Close": "Close"})
 
-    # Garantir dtype numérico
     for c in ("Open", "High", "Low", "Close", "Volume"):
         if c in df.columns:
             df[c] = pd.to_numeric(df[c], errors="coerce")
@@ -114,12 +133,10 @@ def add_features(df: pd.DataFrame) -> pd.DataFrame:
     """Enriquece o preço com indicadores e sinais, garantindo alinhamento e tipos."""
     out = df.copy()
 
-    # garante numérico (yfinance às vezes traz misto/objeto)
     for c in ("Open", "High", "Low", "Close"):
         if c in out.columns:
             out[c] = pd.to_numeric(out[c], errors="coerce")
 
-    # básicos
     out["Ret"]   = out["Close"].pct_change()
     out["EMA20"] = _ema(out["Close"], 20)
     out["EMA50"] = _ema(out["Close"], 50)
@@ -129,50 +146,23 @@ def add_features(df: pd.DataFrame) -> pd.DataFrame:
     out["Vol20"] = out["Ret"].rolling(20).std()
     out["MACD"]  = _ema(out["Close"], 12) - _ema(out["Close"], 26)
 
-    # helper: razão segura e alinhada
     def safe_ratio(a: pd.Series, b: pd.Series) -> pd.Series:
         r = (a.astype(float) / b.replace(0, np.nan).astype(float) - 1.0)
         return r.reindex(out.index).astype(float)
 
-    # sinais (sempre Series alinhadas ao índice de out)
     out["Close_over_EMA50"]  = safe_ratio(out["Close"], out["EMA50"]).fillna(0.0)
     out["EMA20_over_EMA50"]  = safe_ratio(out["EMA20"], out["EMA50"]).fillna(0.0)
     out["EMA50_over_EMA200"] = safe_ratio(out["EMA50"], out["EMA200"]).fillna(0.0)
 
-    # limpa linhas onde os principais indicadores ainda não existem
     need = [
         "Close","EMA20","EMA50","EMA200","RSI14","ATR14","Vol20","MACD",
         "Close_over_EMA50","EMA20_over_EMA50","EMA50_over_EMA200"
     ]
-    need = [c for c in need if c in out.columns]  # segurança
+    need = [c for c in need if c in out.columns]
     out = out.dropna(subset=need)
-
-    # completa retornos iniciais que ficaram NaN
     out["Ret"] = out["Ret"].fillna(0.0)
 
     return out
-
-    # helper: razão segura e alinhada
-    def safe_ratio(a: pd.Series, b: pd.Series) -> pd.Series:
-        r = (a.astype(float) / b.replace(0, np.nan).astype(float) - 1.0)
-        # IMPORTANTÍSSIMO: reindexa e tipa para garantir compatibilidade no setitem
-        return r.reindex(out.index).astype(float)
-
-    # sinais (sempre Series alinhadas ao índice de out)
-    out["Close_over_EMA50"]  = safe_ratio(out["Close"], out["EMA50"]).fillna(0.0)
-    out["EMA20_over_EMA50"]  = safe_ratio(out["EMA20"], out["EMA50"]).fillna(0.0)
-    out["EMA50_over_EMA200"] = safe_ratio(out["EMA50"], out["EMA200"]).fillna(0.0)
-
-    # limpa linhas onde os principais indicadores ainda não existem (período inicial)
-    need = ["Close","EMA20","EMA50","EMA200","RSI14","ATR14","Vol20","MACD",
-            "Close_over_EMA50","EMA20_over_EMA50","EMA50_over_EMA200"]
-    out = out.dropna(subset=need)
-
-    # completa retornos iniciais que ficaram NaN
-    out["Ret"] = out["Ret"].fillna(0.0)
-
-    return out
-
 
 def price_chart(df: pd.DataFrame, title: str = "Preço"):
     import plotly.graph_objects as go
@@ -213,18 +203,18 @@ class ArimaOut:
 
 def arima_now_and_series(returns_train: pd.Series, test_len: int, index_future: pd.Index) -> Tuple[ArimaOut, pd.Series]:
     model = ARIMA(returns_train.values, order=(1,0,0)).fit(method_kwargs={"warn_convergence":False})
-    # próximo (now)
     f1 = model.get_forecast(steps=1)
     mu = float(f1.predicted_mean[0])
     sigma = float(np.sqrt(f1.var_pred_mean[0]))
     prob_up_now = 1.0 - norm.cdf(0.0, loc=mu, scale=sigma)
     out = ArimaOut(mu=mu, sigma=sigma, prob_up=prob_up_now, order=(1,0,0))
-    # série de prob no período de teste
+
     f = model.get_forecast(steps=test_len)
     mu_s = pd.Series(f.predicted_mean, index=index_future)
     sigma_s = pd.Series(np.sqrt(f.var_pred_mean), index=index_future).replace(0, 1e-6)
     prob_s = 1.0 - norm.cdf(0.0, loc=mu_s, scale=sigma_s)
     return out, to_series(prob_s, index_future, "ARIMA")
+
 
 @dataclass
 class GarchOut:
@@ -232,21 +222,20 @@ class GarchOut:
     prob_up: float
 
 def garch_vol_series(returns_train: pd.Series, test_len: int, index_future: pd.Index) -> Tuple[GarchOut, pd.Series]:
-    """Se houver 'arch', usa GARCH(1,1) pra vol; direção neutra (0.5). Caso contrário, usa rolling std."""
+    """Se houver 'arch', usa GARCH(1,1) pra vol; direção neutra (0.5). Senão, usa rolling std."""
     if HAVE_ARCH:
         am = arch_model(returns_train*100, mean="Zero", vol="Garch", p=1, q=1, dist="normal")
         res = am.fit(disp="off")
         f = res.forecast(horizon=test_len)
         sigma = (f.variance.values[-1, :] ** 0.5) / 100.0
         sigma_next = float(sigma[0])
-        vol_s = pd.Series(sigma, index=index_future, name="sigma")
     else:
         vol = returns_train.rolling(20).std().fillna(returns_train.std())
         sigma_next = float(vol.iloc[-1])
-        vol_s = pd.Series([sigma_next]*test_len, index=index_future, name="sigma")
     out = GarchOut(sigma_next=sigma_next, prob_up=0.5)
     prob_neutral = to_series(0.5, index_future, "GARCH")
     return out, prob_neutral
+
 
 @dataclass
 class RFOut:
@@ -267,13 +256,11 @@ def random_forest(train: pd.DataFrame, test_index: pd.Index) -> Tuple[RFOut, pd.
     model = CalibratedClassifierCV(base, cv=5, method="isotonic")
     model.fit(Xs, y)
 
-    # now prob (última barra de treino)
     p_now = float(model.predict_proba(scaler.transform(X.iloc[[-1]]))[:,1][0])
 
     rep = classification_report(y, model.predict(Xs), output_dict=True, zero_division=0)
-    fi = dict(zip(feats, base.fit(Xs, y).feature_importances_.round(4)))  # para exibir
+    fi = dict(zip(feats, base.fit(Xs, y).feature_importances_.round(4)))
 
-    # série para teste
     Xf = train.reindex(test_index).dropna()[feats]
     if len(Xf) == 0:
         prob_s = to_series(0.5, test_index, "RandomForest")
@@ -283,6 +270,7 @@ def random_forest(train: pd.DataFrame, test_index: pd.Index) -> Tuple[RFOut, pd.
 
     out = RFOut(prob_up=p_now, report=rep, feature_importances=fi)
     return out, prob_s, scaler, model
+
 
 @dataclass
 class TrendOut:
@@ -355,12 +343,12 @@ def backtest_prob_strategy(df_test: pd.DataFrame,
                            risk_perc: float = 0.01,
                            atr_mult_stop: float = 2.0,
                            rr: float = 2.0) -> Tuple[pd.DataFrame, Dict, pd.DataFrame]:
-    """Backtest simplificado: entra na close quando há sinal; sai por stop/target/flip de sinal."""
+    """Backtest simplificado: entra no fechamento quando há sinal; sai por stop/target/flip."""
     equity = []
     blotter = []
 
     capital = capital0
-    pos = 0  # +qtd buy / -qtd sell
+    pos = 0
     entry_px = stop_px = tgt_px = 0.0
 
     for dt, p_up in prob_series.items():
@@ -368,15 +356,15 @@ def backtest_prob_strategy(df_test: pd.DataFrame,
         atr = float(df_test.at[dt, "ATR14"])
         signal = "BUY" if p_up >= th_buy else ("SELL" if p_up <= th_sell else "FLAT")
 
-        # saída por stop/target
+        # saída por stop/target/flip
         if pos != 0:
-            if pos > 0:  # comprado
+            if pos > 0:
                 if px <= stop_px or px >= tgt_px or signal == "SELL":
                     pnl = (px - entry_px) * pos
                     capital += pnl
                     blotter.append({"date": dt, "side":"EXIT-L", "qty": pos, "price": px, "pnl": pnl})
                     pos = 0
-            else:  # vendido
+            else:
                 if px >= stop_px or px <= tgt_px or signal == "BUY":
                     pnl = (entry_px - px) * (-pos)
                     capital += pnl
@@ -415,18 +403,17 @@ def backtest_prob_strategy(df_test: pd.DataFrame,
 # ------------------------- [BLOCO 6] Sidebar ---------------------------------
 with st.sidebar:
     st.header("⚙️ Configurações")
-    # universo / ticker
+
     try:
         with open("assets/tickers.json", "r", encoding="utf-8") as f:
             TICKERS = json.load(f)
     except Exception:
-        TICKERS = {"US": ["AAPL", "MSFT", "GOOG", "SPY"], "BR": ["PETR4.SA","VALE3.SA","BOVA11.SA"]}
+        TICKERS = {"US": ["AAPL", "MSFT", "GOOG", "SPY"],
+                   "BR": ["PETR4.SA","VALE3.SA","BOVA11.SA"]}
 
     c1, c2 = st.columns(2)
-    with c1:
-        universo = st.selectbox("Universo", list(TICKERS.keys()), index=0)
-    with c2:
-        ticker = st.selectbox("Ativo", TICKERS[universo], index=0)
+    with c1: universo = st.selectbox("Universo", list(TICKERS.keys()), index=0)
+    with c2: ticker   = st.selectbox("Ativo", TICKERS[universo], index=0)
 
     today = date.today()
     d_start = st.date_input("Data inicial", value=today - timedelta(days=365*5))
@@ -438,22 +425,22 @@ with st.sidebar:
 
     st.subheader("Modelos do Ensemble")
     use_arima = st.checkbox("ARIMA", True)
-    use_garch = st.checkbox("GARCH (vol)", True, help="Neutro na direção (0.5); informa volatilidade.")
-    use_rf = st.checkbox("RandomForest", True)
+    use_garch = st.checkbox("GARCH (vol)", True, help="Direção neutra 0.5; informa volatilidade.")
+    use_rf    = st.checkbox("RandomForest", True)
     use_trend = st.checkbox("TrendScore (Logit)", True)
 
-    w_arima  = st.slider("Peso ARIMA", 0.0, 1.0, 0.30, 0.05)
-    w_garch  = st.slider("Peso GARCH", 0.0, 1.0, 0.10, 0.05)
-    w_rf     = st.slider("Peso RF", 0.0, 1.0, 0.40, 0.05)
-    w_trend  = st.slider("Peso Trend", 0.0, 1.0, 0.20, 0.05)
+    w_arima = st.slider("Peso ARIMA", 0.0, 1.0, 0.30, 0.05)
+    w_garch = st.slider("Peso GARCH", 0.0, 1.0, 0.10, 0.05)
+    w_rf    = st.slider("Peso RF", 0.0, 1.0, 0.40, 0.05)
+    w_trend = st.slider("Peso Trend", 0.0, 1.0, 0.20, 0.05)
 
     st.subheader("Risco")
-    capital = st.number_input("Capital", 100000.0, step=1000.0)
+    capital   = st.number_input("Capital", 100000.0, step=1000.0)
     risk_perc = st.slider("Risco por trade (%)", 0.0025, 0.05, 0.01, 0.0025)
-    atr_mult = st.slider("Stop (x ATR14)", 1.0, 5.0, 2.0, 0.5)
-    rr = st.slider("Risco:Retorno (R)", 1.0, 5.0, 2.0, 0.5)
-    th_buy = st.slider("Threshold BUY", 0.50, 0.90, 0.55, 0.01)
-    th_sell = st.slider("Threshold SELL", 0.10, 0.50, 0.45, 0.01)
+    atr_mult  = st.slider("Stop (x ATR14)", 1.0, 5.0, 2.0, 0.5)
+    rr        = st.slider("Risco:Retorno (R)", 1.0, 5.0, 2.0, 0.5)
+    th_buy    = st.slider("Threshold BUY", 0.50, 0.90, 0.55, 0.01)
+    th_sell   = st.slider("Threshold SELL", 0.10, 0.50, 0.45, 0.01)
 
 
 # ------------------------- [BLOCO 7] Dados & Features ------------------------
@@ -473,21 +460,19 @@ explain_cards: List[Tuple[str, Dict]] = []
 probs_now: Dict[str, float] = {}
 probs_series: Dict[str, pd.Series] = {}
 
-# ARIMA
 if use_arima:
     a_out, a_series = arima_now_and_series(train["Ret"], len(test), test.index)
-    explain_cards.append(("ARIMA", {"model":"ARIMA","order":list(a_out.order),"mu":a_out.mu,"sigma":a_out.sigma,"prob_up":a_out.prob_up}))
+    explain_cards.append(("ARIMA", {"model":"ARIMA","order":list(a_out.order),
+                                    "mu":a_out.mu,"sigma":a_out.sigma,"prob_up":a_out.prob_up}))
     probs_now["ARIMA"] = a_out.prob_up
     probs_series["ARIMA"] = a_series
 
-# GARCH
 if use_garch:
     g_out, g_series = garch_vol_series(train["Ret"], len(test), test.index)
     explain_cards.append(("GARCH", {"model":"GARCH","sigma_next":g_out.sigma_next,"prob_up":0.5}))
     probs_now["GARCH"] = 0.5
     probs_series["GARCH"] = g_series
 
-# RandomForest
 if use_rf:
     rf_out, rf_series, rf_scaler, rf_model = random_forest(train, test.index)
     explain_cards.append(("RandomForest", {"model":"RandomForest","prob_up":rf_out.prob_up,
@@ -495,7 +480,6 @@ if use_rf:
     probs_now["RandomForest"] = rf_out.prob_up
     probs_series["RandomForest"] = rf_series
 
-# TrendScore
 if use_trend:
     tr_out, tr_series, tr_scaler, tr_clf = trend_score(train, test.index)
     explain_cards.append(("Trend", {"model":"TrendScore","prob_up":tr_out.prob_up,
@@ -503,13 +487,12 @@ if use_trend:
     probs_now["TrendScore"] = tr_out.prob_up
     probs_series["TrendScore"] = tr_series
 
-# ensemble atual
 weights = {"ARIMA": w_arima, "GARCH": w_garch, "RandomForest": w_rf, "TrendScore": w_trend}
 p_up_now = weighted_prob(probs_now, weights)
 signal_now = "BUY" if p_up_now >= th_buy else ("SELL" if p_up_now <= th_sell else "NEUTRAL")
 
 last_close = float(df["Close"].iloc[-1])
-last_atr = float(df["ATR14"].iloc[-1])
+last_atr   = float(df["ATR14"].iloc[-1])
 entry = stop = tgt = None
 qty = 0
 if signal_now != "NEUTRAL":
@@ -518,65 +501,108 @@ if signal_now != "NEUTRAL":
 kelly_f = kelly_fraction(p_up_now if signal_now=="BUY" else (1-p_up_now), rr)
 
 # KPIs
-c1,c2,c3,c4 = st.columns(4)
-with c1: st.markdown(f"<div class='card'><div class='sub'>Prob. de Alta (Ensemble)</div><div class='kpi'>{p_up_now:.1%}</div></div>", unsafe_allow_html=True)
-with c2: st.markdown(f"<div class='card'><div class='sub'>Direção</div><div class='kpi'>{signal_now}</div></div>", unsafe_allow_html=True)
-with c3: st.markdown(f"<div class='card'><div class='sub'>Último Close</div><div class='kpi'>{last_close:,.2f}</div></div>", unsafe_allow_html=True)
-with c4: st.markdown(f"<div class='card'><div class='sub'>ATR(14)</div><div class='kpi'>{last_atr:,.2f}</div></div>", unsafe_allow_html=True)
+k1, k2, k3, k4 = st.columns(4)
+with k1: metric_card("Prob. de Alta (Ensemble)", f"{p_up_now:.1%}")
+with k2:
+    cor = "#7BD389" if signal_now=="BUY" else ("#F06292" if signal_now=="SELL" else None)
+    metric_card("Direção", signal_now, color=cor)
+with k3: metric_card("Último Close", f"{last_close:,.2f}")
+with k4: metric_card("ATR(14)", f"{last_atr:,.2f}")
+
 if signal_now!="NEUTRAL":
     d1,d2,d3,d4 = st.columns(4)
-    with d1: st.markdown(f"<div class='card'><div class='sub'>Entrada</div><div class='kpi'>{entry:,.2f}</div></div>", unsafe_allow_html=True)
-    with d2: st.markdown(f"<div class='card'><div class='sub'>Stop</div><div class='kpi'>{stop:,.2f}</div></div>", unsafe_allow_html=True)
-    with d3: st.markdown(f"<div class='card'><div class='sub'>Alvo (R)</div><div class='kpi'>{tgt:,.2f}</div></div>", unsafe_allow_html=True)
-    with d4: st.markdown(f"<div class='card'><div class='sub'>Qtd. sugerida</div><div class='kpi'>{qty:,}</div></div>", unsafe_allow_html=True)
-st.caption(f"Kelly fracionado sugerido: **{kelly_f:.2%}** (use fração conservadora, ex. 0.5×).")
+    with d1: metric_card("Entrada", f"{entry:,.2f}")
+    with d2: metric_card("Stop", f"{stop:,.2f}")
+    with d3: metric_card("Alvo (R)", f"{tgt:,.2f}")
+    with d4: metric_card("Qtd. sugerida", f"{qty:,}")
+st.markdown(f"<span class='pill'>Kelly: {kelly_f:.2%}</span> "
+            f"<span class='pill'>TH Buy: {th_buy:.2f}</span> "
+            f"<span class='pill'>TH Sell: {th_sell:.2f}</span>", unsafe_allow_html=True)
 
 
 # ------------------------- [BLOCO 9] Abas ------------------------------------
-tab_models, tab_bt, tab_trades, tab_probs = st.tabs(["🧠 Modelos","🔁 Backtest","🧾 Trades","📈 Probabilidades"])
+tab_models, tab_bt, tab_trades, tab_probs = st.tabs(
+    ["🧠 Modelos","🔁 Backtest","🧾 Trades","📈 Probabilidades"]
+)
 
 with tab_models:
     st.subheader("Explicação dos Modelos — Cards")
-    def card(title, payload, color):
-        st.markdown(f"<div class='card' style='border-color:{color};'><h4 style='color:{color}'>🧠 {title}</h4><pre class='pretty'>{json.dumps(payload, indent=2, ensure_ascii=False)}</pre></div>", unsafe_allow_html=True)
+
+    # ARIMA
     for name, payload in explain_cards:
-        if name=="ARIMA": card("ARIMA", payload, "#7BD389")
-        elif name=="GARCH": card("GARCH", payload, "#FFB347")
-        elif name=="RandomForest":
-            body = {k:v for k,v in payload.items() if k not in ("report","feature_importances")}
-            card("RandomForest", body, "#8FA3FF")
-            rep = payload.get("report",{})
+        if name == "ARIMA":
+            body = f"<pre class='pretty'>{json.dumps(payload, indent=2, ensure_ascii=False)}</pre>"
+            section_card("ARIMA", "var(--ok)", body)
+
+    # GARCH
+    for name, payload in explain_cards:
+        if name == "GARCH":
+            body = f"<pre class='pretty'>{json.dumps(payload, indent=2, ensure_ascii=False)}</pre>"
+            section_card("GARCH", "var(--warn)", body)
+
+    # RandomForest
+    for name, payload in explain_cards:
+        if name == "RandomForest":
+            body = f"<pre class='pretty'>{json.dumps({k:v for k,v in payload.items() if k not in ('report','feature_importances')}, indent=2, ensure_ascii=False)}</pre>"
+            section_card("RandomForest", "var(--info)", body)
+
+            rep = payload.get("report", {})
             if isinstance(rep, dict) and rep:
-                st.dataframe(pd.DataFrame(rep).T.style.format("{:.4f}"))
-            fi = payload.get("feature_importances",{})
-            if fi: st.bar_chart(pd.Series(fi, name="Importância"))
-        elif name=="Trend":
-            body = {k:v for k,v in payload.items() if k!="coefficients"}
-            card("TrendScore", body, "#F06292")
-            coefs = payload.get("coefficients",{})
-            if coefs: st.bar_chart(pd.Series(coefs, name="Coeficientes"))
+                st.markdown("**Relatório de Classificação (treino/calibração)**")
+                rep_df = pd.DataFrame(rep).T
+                st.dataframe(rep_df.style.format("{:.4f}"), use_container_width=True)
+
+            fi = payload.get("feature_importances", {})
+            if fi:
+                st.markdown("**Importância de Features**")
+                st.bar_chart(pd.Series(fi, name="Importância"))
+
+    # TrendScore
+    for name, payload in explain_cards:
+        if name == "Trend":
+            body = f"<pre class='pretty'>{json.dumps({k:v for k,v in payload.items() if k!='coefficients'}, indent=2, ensure_ascii=False)}</pre>"
+            section_card("TrendScore (Logit)", "var(--trend)", body)
+
+            coefs = payload.get("coefficients", {})
+            if coefs:
+                st.markdown("**Coeficientes (sinal e magnitude)**")
+                st.bar_chart(pd.Series(coefs, name="Coeficientes"))
 
 with tab_bt:
     st.subheader("Backtest — Período de Teste")
-    # montar prob. de ensemble como série
+
     present = [k for k in probs_series.keys() if weights.get(k,0)>0] or list(probs_series.keys())
     if not present:
-        present = ["Fallback"]; probs_series["Fallback"] = to_series(0.5, test.index, "Fallback")
-        weights["Fallback"] = 1.0
-    weights_norm = pd.Series({k:weights.get(k,0.0) for k in present})
-    weights_norm = weights_norm / (weights_norm.sum() if weights_norm.sum()>0 else 1.0)
+        present = ["Fallback"]; probs_series["Fallback"] = to_series(0.5, test.index, "Fallback"); weights["Fallback"] = 1.0
+
+    w_norm = pd.Series({k:weights.get(k,0.0) for k in present})
+    w_norm = w_norm / (w_norm.sum() if w_norm.sum()>0 else 1.0)
+
     probs_df = pd.concat([probs_series[k] for k in present], axis=1)
     probs_df.columns = present
-    prob_ens = (probs_df * weights_norm).sum(axis=1).clip(0,1)
+    prob_ens = (probs_df * w_norm).sum(axis=1).clip(0,1)
 
     eq, stats, blotter = backtest_prob_strategy(
-        test, prob_ens, th_buy, th_sell, capital0=capital,
-        risk_perc=risk_perc, atr_mult_stop=atr_mult, rr=rr
+        test, prob_ens, th_buy, th_sell,
+        capital0=capital, risk_perc=risk_perc,
+        atr_mult_stop=atr_mult, rr=rr
     )
-    c1,c2 = st.columns(2)
+
+    c1, c2 = st.columns([2,1])
     with c1: st.plotly_chart(line_chart(eq["Equity"], "Equity Curve"), use_container_width=True)
-    with c2: st.dataframe(eq.tail(12))
-    st.markdown("<div class='card'><h4>Indicadores do Backtest</h4>"+f"<pre class='pretty'>{json.dumps(stats, indent=2, ensure_ascii=False)}</pre></div>", unsafe_allow_html=True)
+    with c2: st.dataframe(eq.tail(12), use_container_width=True)
+
+    g1, g2, g3, g4, g5 = st.columns(5)
+    with g1: metric_card("Equity Final", f"{stats['final_equity']:,.2f}")
+    with g2: metric_card("Sharpe", f"{stats['sharpe']:.2f}")
+    with g3: metric_card("Trades", str(stats["trades"]))
+    with g4: metric_card("Hit Rate", f"{stats['hit_rate']:.1%}")
+    with g5: metric_card("P/L Médio", f"{stats['avg_pnl']:,.2f}")
+
+    st.download_button(
+        "Baixar Equity (CSV)", eq.to_csv().encode("utf-8"),
+        file_name="equity_curve.csv", mime="text/csv"
+    )
 
     st.session_state["prob_series"] = prob_ens
     st.session_state["probs_df"] = probs_df
@@ -594,9 +620,22 @@ with tab_trades:
 
 with tab_probs:
     st.subheader("Série de Probabilidades")
-    ps = st.session_state.get("prob_series", None)
+    ps  = st.session_state.get("prob_series", None)
     pdf = st.session_state.get("probs_df", None)
-    if isinstance(ps, pd.Series): st.line_chart(ps.rename("prob_up (ensemble)"))
-    if isinstance(pdf, pd.DataFrame): st.dataframe(pdf.tail(12))
 
+    if isinstance(ps, pd.Series):
+        st.line_chart(ps.rename("prob_up (ensemble)"))
+        st.download_button(
+            "Baixar Ensemble (CSV)", ps.to_frame("prob_up").to_csv().encode("utf-8"),
+            file_name="prob_ensemble.csv", mime="text/csv"
+        )
+    if isinstance(pdf, pd.DataFrame):
+        st.markdown("**Componentes do Ensemble (últimas 20 barras)**")
+        st.dataframe(pdf.tail(20), use_container_width=True)
+        st.download_button(
+            "Baixar Componentes (CSV)", pdf.to_csv().encode("utf-8"),
+            file_name="prob_components.csv", mime="text/csv"
+        )
+
+# ------------------------- [BLOCO 10] Rodapé ---------------------------------
 st.caption("Protótipo educacional (single-file). Para produção: custos/slippage, walk-forward, tuning e validação rigorosa.")
