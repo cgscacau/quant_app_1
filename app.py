@@ -77,21 +77,44 @@ def _rsi(close: pd.Series, n: int = 14) -> pd.Series:
     return 100 - (100 / (1 + rs))
 
 def add_features(df: pd.DataFrame) -> pd.DataFrame:
+    """Enriquece o preço com indicadores e sinais, garantindo alinhamento de índice."""
     out = df.copy()
-    out["Ret"] = out["Close"].pct_change().fillna(0.0)
+
+    # garante numérico (yfinance às vezes traz misto/objeto)
+    for c in ("Open", "High", "Low", "Close"):
+        out[c] = pd.to_numeric(out[c], errors="coerce")
+
+    # básicos
+    out["Ret"]   = out["Close"].pct_change()
     out["EMA20"] = _ema(out["Close"], 20)
     out["EMA50"] = _ema(out["Close"], 50)
-    out["EMA200"] = _ema(out["Close"], 200)
+    out["EMA200"]= _ema(out["Close"], 200)
     out["RSI14"] = _rsi(out["Close"], 14)
     out["ATR14"] = _atr(out, 14)
     out["Vol20"] = out["Ret"].rolling(20).std()
-    out["MACD"] = _ema(out["Close"], 12) - _ema(out["Close"], 26)
-    # sinais técnicos simples
-    out["Close_over_EMA50"]  = (out["Close"] / out["EMA50"] - 1).fillna(0)
-    out["EMA20_over_EMA50"]  = (out["EMA20"] / out["EMA50"] - 1).fillna(0)
-    out["EMA50_over_EMA200"] = (out["EMA50"] / out["EMA200"] - 1).fillna(0)
-    out = out.dropna()
+    out["MACD"]  = _ema(out["Close"], 12) - _ema(out["Close"], 26)
+
+    # helper: razão segura e alinhada
+    def safe_ratio(a: pd.Series, b: pd.Series) -> pd.Series:
+        r = (a.astype(float) / b.replace(0, np.nan).astype(float) - 1.0)
+        # IMPORTANTÍSSIMO: reindexa e tipa para garantir compatibilidade no setitem
+        return r.reindex(out.index).astype(float)
+
+    # sinais (sempre Series alinhadas ao índice de out)
+    out["Close_over_EMA50"]  = safe_ratio(out["Close"], out["EMA50"]).fillna(0.0)
+    out["EMA20_over_EMA50"]  = safe_ratio(out["EMA20"], out["EMA50"]).fillna(0.0)
+    out["EMA50_over_EMA200"] = safe_ratio(out["EMA50"], out["EMA200"]).fillna(0.0)
+
+    # limpa linhas onde os principais indicadores ainda não existem (período inicial)
+    need = ["Close","EMA20","EMA50","EMA200","RSI14","ATR14","Vol20","MACD",
+            "Close_over_EMA50","EMA20_over_EMA50","EMA50_over_EMA200"]
+    out = out.dropna(subset=need)
+
+    # completa retornos iniciais que ficaram NaN
+    out["Ret"] = out["Ret"].fillna(0.0)
+
     return out
+
 
 def price_chart(df: pd.DataFrame, title: str = "Preço"):
     import plotly.graph_objects as go
