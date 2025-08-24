@@ -150,61 +150,78 @@ from scipy.stats import norm
 
 st.markdown("### Backtest — Período de Teste")
 
+def _to_series(x, index, name=None):
+    """Garante um pd.Series com o índice correto, a partir de Series/array/escalar."""
+    import numpy as np
+    import pandas as pd
+    if isinstance(x, pd.Series):
+        return x.reindex(index).astype(float)
+    arr = np.asarray(x).reshape(-1)
+    if arr.size == 1:
+        return pd.Series([float(arr[0])]*len(index), index=index, name=name)
+    if arr.size != len(index):
+        # em caso de tamanho diferente, alinhar e preencher
+        s = pd.Series(arr, index=index[:arr.size], name=name)
+        return s.reindex(index).ffill().bfill().astype(float)
+    return pd.Series(arr, index=index, name=name).astype(float)
+
 def prob_series_arima(arima_obj, train_df, test_df):
-    # previsão multi-passos (um passo à frente para cada barra do teste)
     f = arima_obj.res_.get_forecast(steps=len(test_df))
     mu = pd.Series(f.predicted_mean, index=test_df.index)
     sigma = pd.Series(f.se_mean, index=test_df.index).replace(0, 1e-6)
-    return 1.0 - norm.cdf(0.0, loc=mu, scale=sigma)
+    p = 1.0 - norm.cdf(0.0, loc=mu, scale=sigma)   # <- np.ndarray
+    return _to_series(p, test_df.index, "ARIMA")   # <- vira Series
 
 def prob_series_rf(rf_obj, train_df, test_df):
-    # usa scaler/model já treinados; prevê P(alta) para cada barra do teste
     X_all, _, _ = rf_obj._build_Xy(pd.concat([train_df, test_df]))
-    # Linhas do teste (exceto a última, que não tem "próxima barra")
     idx = test_df.index[:-1]
-    X_test = X_all.loc[idx]
+    X_test = X_all.reindex(idx).dropna()           # evita KeyError se faltar linha
+    if len(X_test) == 0:
+        return _to_series(0.5, test_df.index, "RandomForest")
     Xs = rf_obj.scaler.transform(X_test)
     p = rf_obj.model.predict_proba(Xs)[:, 1]
-    s = pd.Series(p, index=idx)
-    # reindexa para todo o período de teste (ffill na última)
-    return s.reindex(test_df.index).fillna(method="ffill").fillna(0.5)
+    s = pd.Series(p, index=X_test.index, name="RandomForest")
+    return s.reindex(test_df.index).ffill().bfill().astype(float)
 
 def prob_series_trend(tr_obj, train_df, test_df):
     F_all = tr_obj._features(pd.concat([train_df, test_df]))
     idx = test_df.index[:-1]
-    X_test = F_all.loc[idx]
+    X_test = F_all.reindex(idx).dropna()
+    if len(X_test) == 0:
+        return _to_series(0.5, test_df.index, "TrendScore")
     p = tr_obj.clf.predict_proba(X_test)[:, 1]
-    s = pd.Series(p, index=idx)
-    return s.reindex(test_df.index).fillna(method="ffill").fillna(0.5)
+    s = pd.Series(p, index=X_test.index, name="TrendScore")
+    return s.reindex(test_df.index).ffill().bfill().astype(float)
 
-# Monta dataframe com as probabilidades por modelo
+# Monta dataframe de probabilidades por modelo (sempre Series válidas)
 probs = []
-cols = []
+cols  = []
 
 if use_arima:
-    ps = prob_series_arima(arima, train, test)
-    probs.append(ps); cols.append("ARIMA")
+    ps = prob_series_arima(arima, train, test); probs.append(ps); cols.append("ARIMA")
 if use_rf:
-    ps = prob_series_rf(rf, train, test)
-    probs.append(ps); cols.append("RandomForest")
+    ps = prob_series_rf(rf, train, test); probs.append(ps); cols.append("RandomForest")
 if use_trend:
-    ps = prob_series_trend(trend, train, test)
-    probs.append(ps); cols.append("TrendScore")
+    ps = prob_series_trend(trend, train, test); probs.append(ps); cols.append("TrendScore")
 if use_garch:
-    # GARCH não dá direção; mantém neutro e participa só no peso se quiser
-    probs.append(pd.Series(0.5, index=test.index))
-    cols.append("GARCH")
+    ps = _to_series(0.5, test.index, "GARCH"); probs.append(ps); cols.append("GARCH")
+
+# fallback de segurança
+if len(probs) == 0:
+    probs = [_to_series(0.5, test.index, "Fallback")]
+    cols  = ["Fallback"]
 
 probs_df = pd.concat(probs, axis=1)
 probs_df.columns = cols
 
-# Ensemble por barra
-w = {'ARIMA': w_arima, 'GARCH': w_garch, 'RandomForest': w_rf, 'TrendScore': w_trend}
-present = [c for c in probs_df.columns if w.get(c, 0) > 0]
-if not present:  # segurança
+# Ensemble por barra (normaliza apenas pesos presentes)
+w_cfg = {'ARIMA': w_arima, 'GARCH': w_garch, 'RandomForest': w_rf, 'TrendScore': w_trend}
+present = [c for c in probs_df.columns if w_cfg.get(c, 0) > 0]
+if not present:
     present = probs_df.columns.tolist()
-weights = pd.Series({c: w.get(c, 0.0) for c in present})
+weights = pd.Series({c: w_cfg.get(c, 0.0) for c in present})
 weights = weights / (weights.sum() if weights.sum() > 0 else 1.0)
+
 prob_series = (probs_df[present] * weights).sum(axis=1).clip(0, 1)
 
 # Backtest
@@ -225,7 +242,6 @@ with c10:
 st.markdown("#### Indicadores do Backtest")
 st.write(stats)
 
-# Opcional: ver a série de probabilidades do ensemble
 with st.expander("Ver série de probabilidades do ensemble"):
     st.line_chart(prob_series.rename("prob_up (ensemble)"))
     st.dataframe(probs_df.tail(10))
