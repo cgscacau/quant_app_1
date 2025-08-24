@@ -48,11 +48,45 @@ st.markdown("""
 
 # ------------------------- [BLOCO 2] Utilidades ------------------------------
 def download_prices(ticker: str, start: str, end: str, interval: str = "1d") -> pd.DataFrame:
-    df = yf.download(ticker, start=start, end=end, interval=interval, auto_adjust=True, progress=False)
+    """
+    Baixa preços do Yahoo e GARANTE colunas planas:
+    Open, High, Low, Close, Adj Close (opcional), Volume.
+    Lida com MultiIndex (('Open','AAPL'), ...) e com nomes estranhos.
+    """
+    df = yf.download(
+        ticker, start=start, end=end, interval=interval,
+        auto_adjust=True, progress=False
+    )
+
+    # índice de datas consistente
     if not isinstance(df.index, pd.DatetimeIndex):
         df.index = pd.to_datetime(df.index)
-    df = df.rename(columns=str.title)
-    return df.dropna()
+
+    # Se vier MultiIndex, seleciona o nível do ticker (último) ou achata
+    if isinstance(df.columns, pd.MultiIndex):
+        # caso comum: nível -1 é o ticker; pegamos só ele
+        tickers_level = df.columns.get_level_values(-1)
+        if ticker in tickers_level:
+            df = df.xs(ticker, axis=1, level=-1)
+        else:
+            # fallback: mantém apenas o nível 0 (OHLCV)
+            df.columns = df.columns.get_level_values(0)
+
+    # Normaliza nomes
+    cols_map = {c: str(c).title() for c in df.columns}
+    df = df.rename(columns=cols_map)
+
+    # Algumas vezes “Adj Close” fica separado; preferimos “Close”
+    if "Adj Close" in df.columns and "Close" not in df.columns:
+        df = df.rename(columns={"Adj Close": "Close"})
+
+    # Garantir dtype numérico
+    for c in ("Open", "High", "Low", "Close", "Volume"):
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+
+    return df.dropna(how="any")
+
 
 def _ema(s: pd.Series, n: int) -> pd.Series:
     return s.ewm(span=n, adjust=False).mean()
@@ -77,12 +111,13 @@ def _rsi(close: pd.Series, n: int = 14) -> pd.Series:
     return 100 - (100 / (1 + rs))
 
 def add_features(df: pd.DataFrame) -> pd.DataFrame:
-    """Enriquece o preço com indicadores e sinais, garantindo alinhamento de índice."""
+    """Enriquece o preço com indicadores e sinais, garantindo alinhamento e tipos."""
     out = df.copy()
 
     # garante numérico (yfinance às vezes traz misto/objeto)
     for c in ("Open", "High", "Low", "Close"):
-        out[c] = pd.to_numeric(out[c], errors="coerce")
+        if c in out.columns:
+            out[c] = pd.to_numeric(out[c], errors="coerce")
 
     # básicos
     out["Ret"]   = out["Close"].pct_change()
@@ -93,6 +128,29 @@ def add_features(df: pd.DataFrame) -> pd.DataFrame:
     out["ATR14"] = _atr(out, 14)
     out["Vol20"] = out["Ret"].rolling(20).std()
     out["MACD"]  = _ema(out["Close"], 12) - _ema(out["Close"], 26)
+
+    # helper: razão segura e alinhada
+    def safe_ratio(a: pd.Series, b: pd.Series) -> pd.Series:
+        r = (a.astype(float) / b.replace(0, np.nan).astype(float) - 1.0)
+        return r.reindex(out.index).astype(float)
+
+    # sinais (sempre Series alinhadas ao índice de out)
+    out["Close_over_EMA50"]  = safe_ratio(out["Close"], out["EMA50"]).fillna(0.0)
+    out["EMA20_over_EMA50"]  = safe_ratio(out["EMA20"], out["EMA50"]).fillna(0.0)
+    out["EMA50_over_EMA200"] = safe_ratio(out["EMA50"], out["EMA200"]).fillna(0.0)
+
+    # limpa linhas onde os principais indicadores ainda não existem
+    need = [
+        "Close","EMA20","EMA50","EMA200","RSI14","ATR14","Vol20","MACD",
+        "Close_over_EMA50","EMA20_over_EMA50","EMA50_over_EMA200"
+    ]
+    need = [c for c in need if c in out.columns]  # segurança
+    out = out.dropna(subset=need)
+
+    # completa retornos iniciais que ficaram NaN
+    out["Ret"] = out["Ret"].fillna(0.0)
+
+    return out
 
     # helper: razão segura e alinhada
     def safe_ratio(a: pd.Series, b: pd.Series) -> pd.Series:
