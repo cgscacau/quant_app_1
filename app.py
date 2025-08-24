@@ -125,25 +125,29 @@ if direction != "NEUTRAL":
     st.caption(f"Kelly fracionado sugerido: **{kelly_f:.2%}** (use fração conservadora, ex. 0.5x).")
 
 import json
+
 st.markdown("### Explicação dos Modelos")
 for name, res in explanations:
     with st.expander(f"{name} — detalhes"):
         if name == "RandomForest":
-            # Tabela do classification_report
             rep = res.get("report", {})
             if rep:
                 rep_df = pd.DataFrame(rep).T
                 st.dataframe(rep_df.style.format("{:.4f}"))
-            # Importância das features
             fi = res.get("feature_importances", {})
             if fi:
                 st.bar_chart(pd.Series(fi, name="importance"))
-            # Demais campos do resultado (sem objetos grandes)
             small = {k: v for k, v in res.items() if k not in ("report", "feature_importances")}
             st.code(json.dumps(small, indent=2, ensure_ascii=False))
+        elif name == "Trend":
+            coefs = res.get("coefficients", {})
+            if coefs:
+                st.bar_chart(pd.Series(coefs, name="coef"))
+            small = {k: v for k, v in res.items() if k not in ("coefficients",)}
+            st.code(json.dumps(small, indent=2, ensure_ascii=False))
         else:
-            # Modelos simples: renderiza como JSON legível
             st.code(json.dumps(res, indent=2, ensure_ascii=False))
+
 
 # ============================ Backtest — Período de Teste ============================
 from scipy.stats import norm
