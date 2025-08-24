@@ -2,11 +2,9 @@
 # app.py — Quant App (UI moderna, blocos bem separados)
 # ============================================================================ #
 
-# === [BLOCO 0] — Imports ===================================================== #
-
+# app.py — cabeçalho mínimo (cole a partir DAQUI)
 
 from __future__ import annotations
-
 import json
 from datetime import date, timedelta
 from typing import Dict, List
@@ -16,7 +14,7 @@ import pandas as pd
 import streamlit as st
 from scipy.stats import norm
 
-# --- Imports do projeto (pacote core) ---
+# --- imports internos (sem NADA antes deles) ---
 from core.data import download_prices, add_features
 from core.models_arima import ARIMAModel
 from core.models_garch import GARCHModel
@@ -27,27 +25,26 @@ from core.risk import entry_stop_gain, position_size, kelly_fraction
 from core.backtest import simulate_prob_strategy
 from core.visual import price_candles, line_series
 
+# sanity check — pode apagar depois:
+st.set_page_config(page_title="Quant App", layout="wide")
+st.write("✅ Imports OK")
 
 
-# === [BLOCO 1] — Configuração visual global ================================= #
-st.set_page_config(page_title="Quant App — Ensemble & Risco", layout="wide")
-
+# =============================== Aparência global ===============================
 CARD_BG = "#0f1116"
 CARD_BD = "#2a2f3a"
-
 st.markdown(
-    """
+    f"""
     <style>
-      .card { background:#0f1116; border:1px solid #2a2f3a; border-radius:16px; padding:16px; margin:8px 0; }
-      .card h4 { margin:0 0 10px 0; font-weight:700; }
-      .kpi  { font-size:28px; font-weight:700; }
-      .sub  { opacity:.8; font-size:12px; }
-      pre.pretty { background:#131622; border-radius:12px; padding:12px; }
+      .card {{ background:{CARD_BG}; border:1px solid {CARD_BD}; border-radius:16px; padding:16px; margin:8px 0; }}
+      .card h4 {{ margin:0 0 10px 0; font-weight:700; }}
+      .kpi  {{ font-size:28px; font-weight:700; }}
+      .sub  {{ opacity:.8; font-size:12px; }}
+      pre.pretty {{ background:#131622; border-radius:12px; padding:12px; }}
     </style>
     """,
     unsafe_allow_html=True,
 )
-
 
 # === [BLOCO 2] — Sidebar: parâmetros do usuário ============================= #
 with st.sidebar:
