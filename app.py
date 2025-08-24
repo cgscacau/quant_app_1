@@ -2,9 +2,11 @@
 # app.py — Quant App (UI moderna, blocos bem separados)
 # ============================================================================ #
 
+# === [BLOCO 0] — Imports ===================================================== #
+
+
 from __future__ import annotations
 
-# === [BLOCO 0] — Imports ===================================================== #
 import json
 from datetime import date, timedelta
 from typing import Dict, List
@@ -14,7 +16,7 @@ import pandas as pd
 import streamlit as st
 from scipy.stats import norm
 
-# Módulos do projeto (pasta core/)
+# --- Imports do projeto (pacote core) ---
 from core.data import download_prices, add_features
 from core.models_arima import ARIMAModel
 from core.models_garch import GARCHModel
@@ -24,6 +26,7 @@ from core.ensemble import weighted_ensemble
 from core.risk import entry_stop_gain, position_size, kelly_fraction
 from core.backtest import simulate_prob_strategy
 from core.visual import price_candles, line_series
+
 
 
 # === [BLOCO 1] — Configuração visual global ================================= #
