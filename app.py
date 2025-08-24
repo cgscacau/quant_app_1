@@ -1,4 +1,4 @@
-# app.py — Quant App (UI moderna com cards) — versão final
+# app.py — Quant App (UI moderna com cards)
 
 from __future__ import annotations
 
@@ -21,14 +21,12 @@ from core.risk import entry_stop_gain, position_size, kelly_fraction
 from core.backtest import simulate_prob_strategy
 from core.visual import price_candles, line_series
 
-
 # =============================== Aparência global ===============================
 st.set_page_config(page_title="Quant App — Ensemble & Risco", layout="wide")
 
 CARD_BG = "#0f1116"
 CARD_BD = "#2a2f3a"
 
-# CSS simples p/ cards e tipografia
 st.markdown(
     f"""
     <style>
@@ -47,6 +45,7 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
+
 
 
 # =============================== Sidebar ===============================
