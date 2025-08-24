@@ -229,14 +229,13 @@ weights = weights / (weights.sum() if weights.sum() > 0 else 1.0)
 prob_series = (probs_df[present] * weights).sum(axis=1).clip(0, 1)
 
 # Backtest
-eq, stats = simulate_prob_strategy(
+eq, stats, blotter = simulate_prob_strategy(
     test, prob_series,
     threshold_buy=th_buy, threshold_sell=th_sell,
     capital0=capital, risk_perc=risk_perc,
     atr_mult_stop=atr_mult_stop, rr=rr
 )
 
-# Visual
 c9, c10 = st.columns(2)
 with c9:
     st.plotly_chart(line_series(eq, 'Equity', title='Equity Curve'), use_container_width=True)
@@ -246,8 +245,14 @@ with c10:
 st.markdown("#### Indicadores do Backtest")
 st.write(stats)
 
-with st.expander("Ver série de probabilidades do ensemble"):
-    st.line_chart(prob_series.rename("prob_up (ensemble)"))
-    st.dataframe(probs_df.tail(10))
+# ---- Trades ----
+st.markdown("#### Blotter de Trades")
+if blotter is not None and len(blotter) > 0:
+    st.dataframe(blotter.tail(20))
+    st.download_button("Baixar trades (CSV)", blotter.to_csv(index=False).encode("utf-8"),
+                       file_name="trades.csv", mime="text/csv")
+else:
+    st.caption("Sem trades no período dado/parametrização atual.")
+
 
 st.caption("Protótipo modular; para produção, implementar walk-forward, custos e tuning robusto.")
